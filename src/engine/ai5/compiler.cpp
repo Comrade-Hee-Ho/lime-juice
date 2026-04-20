@@ -293,6 +293,79 @@ static uint32_t sjis_pair_key(int c1, int c2) {
     return (static_cast<uint32_t>(c1) << 16) | static_cast<uint32_t>(c2);
 }
 
+// ── dict-build helpers ──────────────────────────────────────────────
+
+// a single SJIS unit: 1 byte (ASCII) or 2 bytes (double-byte character)
+using SjisUnit = std::vector<int>;
+// a run of contiguous text units (breaks at non-text boundaries)
+using SjisRun = std::vector<SjisUnit>;
+
+// convert a UTF-8 string to a run of SJIS units
+static SjisRun string_to_sjis_run(const std::string& text, Charset& cs) {
+    SjisRun run;
+
+    for (char32_t cp : utf8_to_codepoints(text)) {
+        auto sjis_opt = cs.char_to_sjis(cp);
+
+        if (sjis_opt.has_value()) {
+            run.push_back(*sjis_opt);
+        }
+    }
+
+    return run;
+}
+
+// recursively collect all text content from the AST as SJIS runs
+static void collect_text_sjis(const AstNode& node, Charset& cs,
+                               std::vector<SjisRun>& runs) {
+
+    if (!node.is_list()) {
+        return;
+    }
+
+    const std::string& tag = node.tag;
+
+    // skip non-text structural nodes
+    if (tag == "meta" || tag == "dict" || tag == "dict-build" || tag == "str") {
+        return;
+    }
+
+    if (tag == "text") {
+        SjisRun run;
+
+        for (const auto& child : node.children) {
+
+            if (child.is_string()) {
+                auto sub = string_to_sjis_run(child.str_val, cs);
+                run.insert(run.end(), sub.begin(), sub.end());
+            } else if (child.is_character()) {
+                auto sjis_opt = cs.char_to_sjis(child.char_val);
+
+                if (sjis_opt.has_value()) {
+                    run.push_back(*sjis_opt);
+                }
+            } else {
+                // non-text child (number, proc, etc.) breaks the run
+                if (!run.empty()) {
+                    runs.push_back(std::move(run));
+                    run = {};
+                }
+            }
+        }
+
+        if (!run.empty()) {
+            runs.push_back(std::move(run));
+        }
+
+        return;
+    }
+
+    // recurse into other list nodes
+    for (const auto& child : node.children) {
+        collect_text_sjis(child, cs, runs);
+    }
+}
+
 static void emit_chr(ByteWriter& out, int c1, int c2, const Config& cfg,
                       const std::unordered_map<uint32_t, int>& dict_lookup) {
     uint32_t key = sjis_pair_key(c1, c2);
@@ -315,9 +388,8 @@ static void emit_chr(ByteWriter& out, int c1, int c2, const Config& cfg,
 static void emit_text_chars(ByteWriter& out, const std::string& text, Charset& cs,
                              const Config& cfg,
                              const std::unordered_map<uint32_t, int>& dict_lookup) {
-    // convert UTF-8 text to SJIS and emit via dictionary or raw
-    std::u32string chars;
-    size_t i = 0;
+    // convert UTF-8 text to SJIS units, then emit with dictionary compression
+    std::vector<std::vector<int>> units;
 
     for (char32_t cp : utf8_to_codepoints(text)) {
         auto sjis_opt = cs.char_to_sjis(cp);
@@ -329,20 +401,31 @@ static void emit_text_chars(ByteWriter& out, const std::string& text, Charset& c
         units.push_back(*sjis_opt);
     }
 
-    for (char32_t cp : chars) {
-        auto sjis_opt = cs.char_to_sjis(cp);
+    // emit units with ASCII bigram lookahead for dictionary compression
+    size_t i = 0;
 
-        if (!sjis_opt.has_value()) {
-            throw std::runtime_error("cannot encode character '" + char32_to_utf8(cp) + "' to SJIS");
-        }
+    while (i < units.size()) {
+        const auto& unit = units[i];
 
-        const auto& sjis = *sjis_opt;
+        if (unit.size() == 2) {
+            // double-byte SJIS: use existing dictionary-aware emit
+            emit_chr(out, unit[0], unit[1], cfg, dict_lookup);
+            i++;
+        } else {
+            // single-byte: check for ASCII bigram in dictionary
+            if (cfg.compress && i + 1 < units.size() && units[i + 1].size() == 1) {
+                uint32_t key = sjis_pair_key(unit[0], units[i + 1][0]);
+                auto it = dict_lookup.find(key);
 
-        if (sjis.size() == 2) {
-            emit_chr(out, sjis[0], sjis[1], cfg, dict_lookup);
-        } else if (sjis.size() == 1) {
-            // single-byte characters should not appear in text runs
-            out.emit(static_cast<uint8_t>(sjis[0]));
+                if (it != dict_lookup.end()) {
+                    out.emit(static_cast<uint8_t>(cfg.dict_base + it->second));
+                    i += 2;
+                    continue;
+                }
+            }
+
+            out.emit(static_cast<uint8_t>(unit[0]));
+            i++;
         }
     }
 }
@@ -823,6 +906,76 @@ static void emit_dict_header(ByteWriter& out, const DictState& dict) {
     }
 }
 
+// ── dict-build: auto-generate dictionary from text bigrams ──────────
+static DictState build_dict_from_text(const AstNode& ast, const Config& cfg, Charset& cs) {
+    // collect all text from the script as SJIS unit runs
+    // this is a vector<vector<int>>
+    std::vector<SjisRun> runs;
+    collect_text_sjis(ast, cs, runs);
+
+    int max_entries = 256 - static_cast<int>(cfg.dict_base);
+    DictState state;
+    std::unordered_map<uint32_t, int> pair_freq;
+
+    for (const SjisRun &run : runs){
+        for (size_t i = 0; i < run.size(); i++) {
+            SjisUnit unit = run[i];
+            uint32_t bi;
+
+            if (unit.size() > 1) {
+                //this is a sjis char & should go right into the dict
+                bi = sjis_pair_key(unit[0], unit[1]);
+            } else {
+                // this is an ascii char, include the next character in the run
+                if (i == run.size() - 1 || run[i+1].size() > 1) {
+                    // skip the last one because it's not starting a bigram OR is a SJIS character
+                    continue;
+                }
+
+                bi = sjis_pair_key(unit[0], run[i+1][0]);
+            }
+
+            if (pair_freq.find(bi) == pair_freq.end()) {
+                //key isn't present, insert it
+                pair_freq[bi] = 1;
+            } else {
+                pair_freq[bi]++;
+            }
+        }
+    }
+    
+    // convert pair freq list to a vector and sort
+    std::vector<std::pair<uint32_t, int>> bi_counts;
+    bi_counts.reserve(pair_freq.size());
+    for (auto &p : pair_freq){
+        bi_counts.emplace_back(p.first, p.second);
+    }
+
+    if (bi_counts.empty()) {
+        return state;
+    }
+
+    // bound max_entries to the amt of bigrams to avoid going over the array bounds
+    int count = static_cast<int>(bi_counts.size());
+    if (max_entries > count) {
+        max_entries = count;
+    }
+
+    std::partial_sort(bi_counts.begin(), bi_counts.begin() + max_entries, bi_counts.end(),
+                        [](const auto& a, const auto& b) { return a.second > b.second; });
+
+    // build dict based on sorted bigram values
+    for (int i = 0; i < max_entries; i++) {
+        if (bi_counts[i].second >= 3){
+            uint32_t key = bi_counts[i].first;
+            state.lookup[key] = static_cast<int>(state.entries.size());
+            state.entries.push_back({(int)key >> 16, (int)key & 0xFFFF});
+        }
+    }
+
+    return state;
+}
+
 // ── top-level compile ────────────────────────────────────────────────
 
 std::vector<uint8_t> compile_mes(const AstNode& ast, Config& cfg) {
@@ -854,13 +1007,18 @@ std::vector<uint8_t> compile_mes(const AstNode& ast, Config& cfg) {
     Charset cs;
     cs.load(cfg.charset_name);
 
-    // build dictionary from dict node
+    // build dictionary from dict node or auto-generate from text
     DictState dict;
 
     for (const auto& child : ast.children) {
 
         if (child.is_list("dict")) {
             dict = build_dict_from_ast(child, cs);
+            break;
+        }
+
+        if (child.is_list("dict-build") && cfg.compress) {
+            dict = build_dict_from_text(ast, cfg, cs);
             break;
         }
     }
@@ -879,7 +1037,7 @@ std::vector<uint8_t> compile_mes(const AstNode& ast, Config& cfg) {
     // emit statements (skip meta and dict)
     for (const auto& child : ast.children) {
 
-        if (child.is_list("meta") || child.is_list("dict")) {
+        if (child.is_list("meta") || child.is_list("dict") || child.is_list("dict-build")) {
             continue;
         }
 
