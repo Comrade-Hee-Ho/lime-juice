@@ -335,36 +335,8 @@ static void emit_text_char(ByteWriter& out, char32_t cp, Charset& cs) {
 
 // encode a UTF-8 string as SJIS text bytes
 static void emit_text_string(ByteWriter& out, const std::string& str, Charset& cs) {
-    size_t i = 0;
 
-    while (i < str.size()) {
-        unsigned char c = static_cast<unsigned char>(str[i]);
-        char32_t cp;
-        int len;
-
-        if (c < 0x80) {
-            cp = c;
-            len = 1;
-        } else if ((c & 0xE0) == 0xC0) {
-            cp = c & 0x1F;
-            len = 2;
-        } else if ((c & 0xF0) == 0xE0) {
-            cp = c & 0x0F;
-            len = 3;
-        } else if ((c & 0xF8) == 0xF0) {
-            cp = c & 0x07;
-            len = 4;
-        } else {
-            out.emit(c);
-            i++;
-            continue;
-        }
-
-        for (int j = 1; j < len && i + j < str.size(); j++) {
-            cp = (cp << 6) | (static_cast<unsigned char>(str[i + j]) & 0x3F);
-        }
-
-        i += len;
+    for (char32_t cp : utf8_to_codepoints(str)) {
         emit_text_char(out, cp, cs);
     }
 }

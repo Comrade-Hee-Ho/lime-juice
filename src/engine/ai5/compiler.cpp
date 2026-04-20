@@ -319,31 +319,14 @@ static void emit_text_chars(ByteWriter& out, const std::string& text, Charset& c
     std::u32string chars;
     size_t i = 0;
 
-    while (i < text.size()) {
-        char32_t cp;
-        uint8_t b = static_cast<uint8_t>(text[i]);
+    for (char32_t cp : utf8_to_codepoints(text)) {
+        auto sjis_opt = cs.char_to_sjis(cp);
 
-        if (b < 0x80) {
-            cp = b;
-            i++;
-        } else if ((b & 0xE0) == 0xC0) {
-            cp = (b & 0x1F) << 6;
-            cp |= (static_cast<uint8_t>(text[i + 1]) & 0x3F);
-            i += 2;
-        } else if ((b & 0xF0) == 0xE0) {
-            cp = (b & 0x0F) << 12;
-            cp |= (static_cast<uint8_t>(text[i + 1]) & 0x3F) << 6;
-            cp |= (static_cast<uint8_t>(text[i + 2]) & 0x3F);
-            i += 3;
-        } else {
-            cp = (b & 0x07) << 18;
-            cp |= (static_cast<uint8_t>(text[i + 1]) & 0x3F) << 12;
-            cp |= (static_cast<uint8_t>(text[i + 2]) & 0x3F) << 6;
-            cp |= (static_cast<uint8_t>(text[i + 3]) & 0x3F);
-            i += 4;
+        if (!sjis_opt.has_value()) {
+            throw std::runtime_error("cannot encode character '" + char32_to_utf8(cp) + "' to SJIS");
         }
 
-        chars.push_back(cp);
+        units.push_back(*sjis_opt);
     }
 
     for (char32_t cp : chars) {
