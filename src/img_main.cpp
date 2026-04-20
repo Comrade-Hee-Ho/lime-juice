@@ -14,7 +14,7 @@
 namespace fs = std::filesystem;
 
 static const char* TITLE = "juice-img";
-static const char* VERSION = "v0.2.0 (lime-juice img ver.)";
+static const char* VERSION = "v0.3.0 (lime-juice img ver.)";
 
 // detect image format from file contents
 enum class ImageFormat { GP4, GPC, GPA, Unknown };
@@ -116,7 +116,7 @@ static void print_usage() {
         "\n"
         "commands:\n"
         "  -d, --decode    decode GP4/GPC to PNG, GPA to GIF\n"
-        "  -c, --compile   compile PNG to GP4/GPC, GIF to GPA\n"
+        "  -c, --compile   compile (encode) PNG to GP4/GPC, GIF to GPA\n"
         "  -v, --version   show version\n"
         "\n"
         "options:\n"
@@ -125,6 +125,8 @@ static void print_usage() {
         "  -F, --format FMT    target format for compile: gp4, gpc, gpa\n"
         "  -p, --palette PATH  palette source (GPC file) for GPA decode\n"
         "  -W, --force-width N canvas width override for GP4 decode (default 640)\n"
+        "  -x, --force-x N     x position override for compile\n"
+        "  -y, --force-y N     y position override for compile\n"
     ;
 }
 
@@ -247,7 +249,8 @@ static void decode_file(const std::string& path, bool force,
 }
 
 static void encode_file(const std::string& path, const std::string& format_str,
-                        bool force, const std::string& output_override = "") {
+                        bool force, const std::string& output_override,
+                        int force_x, int force_y) {
     std::string ext = get_ext(path);
     std::string stem = get_stem(path);
     std::string out_ext = format_str.empty()
@@ -255,6 +258,10 @@ static void encode_file(const std::string& path, const std::string& format_str,
 
     if (ext == ".png") {
         auto img = load_png(path);
+
+        if (force_x >= 0) { img.x = static_cast<int16_t>(force_x); }
+        if (force_y >= 0) { img.y = static_cast<int16_t>(force_y); }
+
         std::string out;
 
         if (out_ext == ".gp4") {
@@ -312,6 +319,16 @@ static void encode_file(const std::string& path, const std::string& format_str,
         }
 
         auto frames = load_gif(path);
+
+        if (force_x >= 0 || force_y >= 0) {
+
+            for (auto& frame : frames) {
+
+                if (force_x >= 0) { frame.x = static_cast<int16_t>(force_x); }
+                if (force_y >= 0) { frame.y = static_cast<int16_t>(force_y); }
+            }
+        }
+
         write_file(out, gpa::encode(frames));
         print_color("b-white", stem);
         println_color("b-green", get_ext(out));
@@ -329,6 +346,8 @@ int main(int argc, char* argv[]) {
     std::string format_str;
     std::string palette_path;
     int force_width = 0;
+    int force_x = -1;
+    int force_y = -1;
     std::vector<std::string> file_args;
 
     for (int i = 1; i < argc; i++) {
@@ -348,6 +367,20 @@ int main(int argc, char* argv[]) {
             palette_path = argv[++i];
         } else if ((arg == "-W" || arg == "--force-width") && i + 1 < argc) {
             force_width = std::stoi(argv[++i]);
+        } else if ((arg == "-x" || arg == "--force-x") && i + 1 < argc) {
+            force_x = std::stoi(argv[++i]);
+
+            if (force_x < 0 || force_x > 65535) {
+                std::cerr << "--force-x must be 0-65535" << std::endl;
+                return 1;
+            }
+        } else if ((arg == "-y" || arg == "--force-y") && i + 1 < argc) {
+            force_y = std::stoi(argv[++i]);
+
+            if (force_y < 0 || force_y > 65535) {
+                std::cerr << "--force-y must be 0-65535" << std::endl;
+                return 1;
+            }
         } else if (arg == "-f" || arg == "--force") {
             force = true;
         } else if (arg == "-h" || arg == "--help") {
@@ -368,7 +401,7 @@ int main(int argc, char* argv[]) {
     }
 
     if (command == Command::None) {
-        std::cout << "type `" << TITLE << " -h` for help" << std::endl;
+        print_usage();
         return 0;
     }
 
@@ -393,7 +426,7 @@ int main(int argc, char* argv[]) {
             if (command == Command::Decode) {
                 decode_file(path, force, output_path, palette_path, force_width);
             } else if (command == Command::Encode) {
-                encode_file(path, format_str, force, output_path);
+                encode_file(path, format_str, force, output_path, force_x, force_y);
             }
 
         } catch (const std::exception& e) {
