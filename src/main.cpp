@@ -21,7 +21,7 @@
 namespace fs = std::filesystem;
 
 static const char* TITLE = "juice";
-static const char* VERSION = "v0.2.2 (lime-juice)";
+static const char* VERSION = "v0.2.3 (lime-juice)";
 
 // thresholds for detecting suspiciously small decompiler output
 static const size_t SUSPECT_OUTPUT_MAX = 256;
@@ -497,7 +497,7 @@ int main(int argc, char* argv[]) {
 
         case Command::None:
         default:
-            std::cout << "type `" << TITLE << " -h` for help" << std::endl;
+            print_usage();
             return 0;
     }
 }
