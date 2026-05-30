@@ -12,11 +12,11 @@ A companion tool, **juice-img**, handles the image formats used by the same game
 
 Six engine versions were used across these games. Functionally, they fall into three distinct families:
 
-| Family | Versions | Notes |
-|--------|----------|-------|
-| **AI1** | AI1, AI2 | Older engine with simpler bytecode. AI2 is functionally identical to AI1. |
-| **AI5** | AI4, AI5 | The most common engine. AI4 is functionally identical to AI5. |
-| **ADV** | AI3, ADV | Advanced engine with segment-based structure. ADV forked from AI3; they are functionally equivalent. |
+| Family | Versions | Notes | Game list |
+|--------|----------|-------|-----------|
+| **AI1** | AI1, AI2 | Older engine with simpler bytecode. AI2 is functionally identical to AI1. | [AI1/AI2 games](https://vndb.org/r?q=&o=a&s=title&f=12fgAIfoAI2) |
+| **AI5** | AI4, AI5 | The most common engine. AI4 is functionally identical to AI5. | [AI4/AI5 games](https://vndb.org/r?q=&o=a&s=title&f=12foAI4foAI5) |
+| **ADV** | AI3, ADV | Advanced engine with segment-based structure. ADV forked from AI3; they are functionally equivalent. | [AI3/ADV games](https://vndb.org/r?f=fwADV98V-) |
 
 **AI5WIN**, a Windows port of AI5, also exists but is not currently supported by juice. It shares most of its bytecode format with AI5 but has some Windows-specific differences.
 
